@@ -19,6 +19,7 @@
 
  */
 
+#include <algorithm>        // for std::min
 #include <cctype>           // for isspace, toupper, isdigit
 #include <cstdio>           // for sprintf, size_t
 #include <cstring>          // for strlen, memmove, strchr, strcpy, strncmp, strcat, strncpy
@@ -47,7 +48,8 @@ static const char* DEFAULT_BADCHARS = "\"$.,'!-";
 static constexpr unsigned int prime = 37U;
 
 struct uniq_shortname {
-  char* orig_shortname{nullptr};
+  QByteArray shortname;
+  QByteArray basename;
   int conflictctr{0};
 };
 
@@ -85,11 +87,11 @@ static struct replacements {
 /*
  * We hash all strings as upper case.
  */
-unsigned int hash_string(const char* key)
+unsigned int hash_string(const QByteArray& key)
 {
   unsigned int hash = 0;
-  while (*key) {
-    hash = ((hash<<5) ^ (hash>>27)) ^ toupper(*key++);
+  for (auto c : qAsConst(key)) {
+    hash = ((hash<<5) ^ (hash>>27)) ^ toupper(c);
   }
   hash = hash % prime;
   return hash;
@@ -108,12 +110,11 @@ mkshort_new_handle()
 
 static
 uniq_shortname*
-is_unique(mkshort_handle_imp* h, char* name)
+is_unique(mkshort_handle_imp* h, const QByteArray& name)
 {
-
-  int hash = hash_string(name);
+  int hash = hash_string(name.data());
   foreach (uniq_shortname* z, h->namelist[hash]) {
-    if (0 == case_ignore_strcmp(z->orig_shortname, name)) {
+    if (0 == case_ignore_strcmp(z->shortname, name.data())) {
       return z;
     }
   }
@@ -122,37 +123,64 @@ is_unique(mkshort_handle_imp* h, char* name)
 
 static
 void
-add_to_hashlist(mkshort_handle_imp* h, char* name)
+add_to_hashlist(mkshort_handle_imp* h, const QByteArray& name, const QByteArray& base)
 {
   int hash = hash_string(name);
-  auto* s = (uniq_shortname*) xcalloc(1, sizeof(uniq_shortname));
-
-  s->orig_shortname = xstrdup(name);
+  auto* s = new uniq_shortname;
+  s->shortname = name;
+  s->basename = base;
   h->namelist[hash].append(s);
 }
 
 char*
 mkshort_add_to_list(mkshort_handle_imp* h, char* name)
 {
+  QByteArray shortname(name);
+  QByteArray basename(name);
   uniq_shortname* s;
 
-  while ((s = is_unique(h, name))) {
-    char tbuf[13];
-    size_t l = strlen(name);
+  basename = shortname;
+
+  while ((s = is_unique(h, shortname))) {
+    // If list entry was generated (shortname != basename), use the
+    // basename from list entry, otherwise continue with basename from
+    // last iteration.
+    while (s->shortname != s->basename) {
+      basename = s->basename;
+      s = is_unique(h, basename);
+    }
+
+    // Update basename in case we're generating a new shortname based
+    // on a list entry which directly added but collides with a new
+    // generated name. This can happen for an input sequence of:
+    // "WP.1", "WP", "WP".
+    if (s->basename.length() == 0) {
+      s->basename = basename;
+    }
 
     s->conflictctr++;
 
-    int dl = sprintf(tbuf, ".%d", s->conflictctr);
+    // Append conflictctr to basename
+    shortname = basename;
+    shortname.append('.');
+    shortname.append(QByteArray::number(s->conflictctr));
 
-    if (l + dl < h->target_len) {
-      name = (char*) xrealloc(name, l + dl + 1);
-      strcat(name, tbuf);
-    } else {
-      strcpy(&name[l-dl], tbuf);
+    // Truncate basename if generated shortname exceeds target_len
+    if (shortname.length() > int(h->target_len)) {
+      basename.truncate(std::min(basename.length() -1, int(h->target_len - 2)));
+      shortname = basename;
+    }
+
+    // Do not continue with empty basename. This typically means
+    // that no unique shortname could be found within target_len.
+    if (basename.length() == 0) {
+      fatal("no unique shortname found for name \"%s\"\n", qPrintable(name));
     }
   }
 
-  add_to_hashlist(h, name);
+  add_to_hashlist(h, shortname, basename);
+  name = (char*) xrealloc(name, shortname.length() + 1);
+  strcpy(name, shortname.data());
   return name;
 }
 
@@ -170,12 +198,11 @@ mkshort_del_handle(short_handle* h)
 #if 0
       if (global_opts.verbose_status >= 2 && s->conflictctr) {
         fprintf(stderr, "%d Output name conflicts: '%s'\n",
-                s->conflictctr, s->orig_shortname);
+                s->conflictctr, s->shortname);
       }
 #endif
       auto s = i.takeFirst();
-      xfree(s->orig_shortname);
-      xfree(s);
+      delete s;
     }
   }
   /* setshort_badchars(*h, NULL); ! currently setshort_badchars() always allocates something ! */

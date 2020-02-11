@@ -1,0 +1,6 @@
+#
+# mkshort test case
+#
+rm -f ${TMPDIR}/mkshort.*
+gpsbabel -i unicsv -f ${REFERENCE}/mkshort.csv -o skyforce -F ${TMPDIR}/mkshort.txt
+compare ${REFERENCE}/mkshort.txt ${TMPDIR}/mkshort.txt
